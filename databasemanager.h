@@ -63,6 +63,7 @@ private:
     QPushButton *m_refreshBtn;
     QPushButton *m_exportBtn;
     QPushButton *m_infoBtn;
+    QPushButton *m_chartBtn;
 
     QLabel*m_statusLabel;
 
@@ -80,8 +81,12 @@ private:
     void createDatabaseConnection();
     bool connectToSQLite(const QString& );
     void loadTables();
+    void createChart();
     QStringList getAvailableDatabaseTypes();
     QStringList getTableColumnNames(const QString& tablename);
+    bool isColumnNumeric(const QString& tableName, const QString& columnName);
+
+
 
 };
 

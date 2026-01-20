@@ -3,6 +3,11 @@
 #include <QVBoxLayout>
 #include <QSqlRecord>
 #include <QSqlField>
+#include <QSqlQuery>
+#include<QtCharts/QtCharts>
+
+
+
 DataBaseManager::DataBaseManager(QWidget *parent_widget,QObject *parent)
     : QObject(parent),
     m_tablemodel(nullptr),
@@ -70,11 +75,16 @@ void DataBaseManager::setupUI()
     m_infoBtn->setFixedWidth(80);
     m_infoBtn->setEnabled(false);
 
+    m_chartBtn = new QPushButton("show charts");
+    m_chartBtn->setFixedWidth(80);
+    m_chartBtn->setEnabled(false);
+
     buttonLayout->addWidget(m_connectBtn);
     buttonLayout->addWidget(m_disconnectBtn);
     buttonLayout->addWidget(m_refreshBtn);//
     buttonLayout->addWidget(m_exportBtn);//
     buttonLayout->addWidget(m_infoBtn);//
+    buttonLayout->addWidget(m_chartBtn);//
     buttonLayout->addStretch();
     connectionLayout->addLayout(buttonLayout);
 
@@ -190,6 +200,7 @@ void DataBaseManager:: createDatabaseConnection()
         m_refreshBtn->setEnabled(true);
         m_exportBtn->setEnabled(true);
         m_infoBtn->setEnabled(true);
+         m_chartBtn->setEnabled(true);
         m_dbPathEdit->setEnabled(false);
         m_browseBtn->setEnabled(false);
 
@@ -271,6 +282,7 @@ void DataBaseManager::loadTables()
     m_refreshBtn->setEnabled(false);
     m_exportBtn->setEnabled(false);
     m_infoBtn->setEnabled(false);
+    m_chartBtn->setEnabled(false);
     m_dbPathEdit->setEnabled(true);
     m_dbPathEdit->clear();
     m_browseBtn->setEnabled(true);
@@ -322,6 +334,180 @@ void DataBaseManager::exportTable()
 
 }
 
+bool DataBaseManager::isColumnNumeric(const QString& tableName, const QString& columnName)
+{
+    if (!m_database.isOpen()) return false;
+    
+    QSqlQuery query(m_database);
+    query.prepare(QString("SELECT %1 FROM %2 LIMIT 1").arg(columnName).arg(tableName));
+    
+    if (!query.exec() || !query.next()) {
+        return false;
+    }
+    
+    QVariant value = query.value(0);
+    QVariant::Type type = value.type();
+    
+    return (type == QVariant::Int || 
+            type == QVariant::Double || 
+            type == QVariant::LongLong ||
+            type == QVariant::UInt ||
+            type == QVariant::ULongLong);
+}
+
+void DataBaseManager::createChart()
+{
+    if (!m_database.isOpen() || m_currentTable.isEmpty()) {
+        QMessageBox::warning(m_container, "Error", "No table selected!");
+        return;
+    }
+
+    QStringList columns = getTableColumnNames(m_currentTable);
+    if (columns.size() < 2) {
+        QMessageBox::warning(m_container, "Error", "Table must have at least 2 columns!");
+        return;
+    }
+
+    // Create dialog for column selection
+    QDialog dialog(m_container);
+    dialog.setWindowTitle("Create Chart");
+    dialog.resize(400, 250);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    // X-axis selection
+    QHBoxLayout *xLayout = new QHBoxLayout();
+    xLayout->addWidget(new QLabel("X-Axis (Category/Label):"));
+    QComboBox *xAxisCombo = new QComboBox();
+    xAxisCombo->addItems(columns);
+    xLayout->addWidget(xAxisCombo);
+    layout->addLayout(xLayout);
+
+    // Y-axis selection
+    QHBoxLayout *yLayout = new QHBoxLayout();
+    yLayout->addWidget(new QLabel("Y-Axis (Value):"));
+    QComboBox *yAxisCombo = new QComboBox();
+    yAxisCombo->addItems(columns);
+    if (columns.size() > 1) {
+        yAxisCombo->setCurrentIndex(1);
+    }
+    yLayout->addWidget(yAxisCombo);
+    layout->addLayout(yLayout);
+
+    // Chart type selection
+    QHBoxLayout *typeLayout = new QHBoxLayout();
+    typeLayout->addWidget(new QLabel("Chart Type:"));
+    QComboBox *chartTypeCombo = new QComboBox();
+    chartTypeCombo->addItems({"Bar Chart", "Pie Chart", "Line Chart"});
+    typeLayout->addWidget(chartTypeCombo);
+    layout->addLayout(typeLayout);
+
+    // Buttons
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    QPushButton *okBtn = new QPushButton("Create");
+    QPushButton *cancelBtn = new QPushButton("Cancel");
+    btnLayout->addStretch();
+    btnLayout->addWidget(okBtn);
+    btnLayout->addWidget(cancelBtn);
+    layout->addLayout(btnLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        QString xColumn = xAxisCombo->currentText();
+        QString yColumn = yAxisCombo->currentText();
+        QString chartType = chartTypeCombo->currentText();
+
+        // Fetch data
+        QSqlQuery query(m_database);
+        query.prepare(QString("SELECT %1, %2 FROM %3").arg(xColumn).arg(yColumn).arg(m_currentTable));
+
+        if (!query.exec()) {
+            QMessageBox::warning(m_container, "Error", "Failed to fetch data: " + query.lastError().text());
+            return;
+        }
+
+        // Store data
+        QMap<QString, double> data;
+        bool yIsNumeric = isColumnNumeric(m_currentTable, yColumn);
+
+        while (query.next()) {
+            QString xValue = query.value(0).toString();
+            double yValue = yIsNumeric ? query.value(1).toDouble() : 1.0;
+
+            if (data.contains(xValue)) {
+                data[xValue] += yValue;
+            } else {
+                data[xValue] = yValue;
+            }
+        }
+
+        if (data.isEmpty()) {
+            QMessageBox::warning(m_container, "Error", "No data to display!");
+            return;
+        }
+
+        // Create chart
+        QChart *chart = new QChart();
+
+        if (chartType == "Bar Chart") {
+            QBarSet *set = new QBarSet(yColumn);
+            QStringList categories;
+
+            for (auto it = data.begin(); it != data.end(); ++it) {
+                *set << it.value();
+                categories << it.key();
+            }
+
+            QBarSeries *series = new QBarSeries();
+            series->append(set);
+            chart->addSeries(series);
+
+            QBarCategoryAxis *axisX = new QBarCategoryAxis();
+            axisX->append(categories);
+            chart->addAxis(axisX, Qt::AlignBottom);
+            series->attachAxis(axisX);
+
+            QValueAxis *axisY = new QValueAxis();
+            chart->addAxis(axisY, Qt::AlignLeft);
+            series->attachAxis(axisY);
+
+        } else if (chartType == "Pie Chart") {
+            QPieSeries *series = new QPieSeries();
+            for (auto it = data.begin(); it != data.end(); ++it) {
+                series->append(it.key(), it.value());
+            }
+            chart->addSeries(series);
+
+        } else if (chartType == "Line Chart") {
+            QLineSeries *series = new QLineSeries();
+            int index = 0;
+            for (auto it = data.begin(); it != data.end(); ++it) {
+                series->append(index++, it.value());
+            }
+            chart->addSeries(series);
+            chart->createDefaultAxes();
+        }
+
+        chart->setTitle(QString("%1 vs %2").arg(xColumn).arg(yColumn));
+        chart->legend()->setVisible(true);
+
+        // Display chart
+        QChartView *chartView = new QChartView(chart);
+        chartView->setRenderHint(QPainter::Antialiasing);
+
+        QDialog chartDialog(m_container);
+        chartDialog.setWindowTitle("Chart Viewer");
+        chartDialog.resize(800, 600);
+
+        QVBoxLayout *chartLayout = new QVBoxLayout(&chartDialog);
+        chartLayout->addWidget(chartView);
+
+        chartDialog.exec();
+    }
+}
+
 void DataBaseManager::showTableInfo()
 {
 
@@ -369,4 +555,5 @@ void DataBaseManager::setupConnections()
     connect(m_tableCombo,QOverload<int>::of(&QComboBox::currentIndexChanged),this,&DataBaseManager::onTableSelected);
     connect(m_infoBtn,&QPushButton::clicked,this,&DataBaseManager::showTableInfo);
     connect(m_exportBtn,&QPushButton::clicked,this,&DataBaseManager::exportTable);
+    connect(m_chartBtn,&QPushButton::clicked,this,&DataBaseManager::createChart);
 }
